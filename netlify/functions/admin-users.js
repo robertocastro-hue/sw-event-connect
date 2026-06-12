@@ -19,7 +19,7 @@ async function requireAdmin(event, adminClient) {
   const { data: userData, error: userError } = await adminClient.auth.getUser(token)
 
   if (userError || !userData?.user) {
-    return { error: jsonResponse(401, { error: 'Invalid session.' }) }
+    return { error: jsonResponse(401, { error: 'Invalid session.', debug: { userError } }) }
   }
 
   const { data: profile, error: profileError } = await adminClient
@@ -28,8 +28,20 @@ async function requireAdmin(event, adminClient) {
     .eq('id', userData.user.id)
     .single()
 
+  console.log('DEBUG admin check', {
+    userId: userData.user.id,
+    email: userData.user.email,
+    profile,
+    profileError
+  })
+
   if (profileError || !profile?.is_admin) {
-    return { error: jsonResponse(403, { error: 'Admin access required.' }) }
+    return {
+      error: jsonResponse(403, {
+        error: 'Admin access required.',
+        debug: { userId: userData.user.id, email: userData.user.email, profile, profileError }
+      })
+    }
   }
 
   return { user: userData.user }
@@ -76,35 +88,51 @@ export const handler = async (event) => {
     }
 
     if (event.httpMethod === 'POST') {
-      const { email, full_name, is_admin } = JSON.parse(event.body || '{}')
+      const { email, full_name, is_admin, password } = JSON.parse(event.body || '{}')
       if (!email) return jsonResponse(400, { error: 'Email is required.' })
+      if (!password || password.length < 8) {
+        return jsonResponse(400, { error: 'Password must be at least 8 characters.' })
+      }
 
-      const { data: invited, error: inviteError } = await adminClient.auth.admin.inviteUserByEmail(
+      const { data: created, error: createError } = await adminClient.auth.admin.createUser({
         email,
-        { data: { full_name: full_name || '' } }
-      )
-      if (inviteError) throw inviteError
+        password,
+        email_confirm: true,
+        user_metadata: { full_name: full_name || '' }
+      })
+      if (createError) throw createError
 
       const { error: profileError } = await adminClient
         .from('profiles')
         .update({ full_name: full_name || null, is_admin: !!is_admin })
-        .eq('id', invited.user.id)
+        .eq('id', created.user.id)
 
       if (profileError) throw profileError
 
-      return jsonResponse(200, { success: true, user_id: invited.user.id })
+      return jsonResponse(200, { success: true, user_id: created.user.id })
     }
 
     if (event.httpMethod === 'PATCH') {
-      const { user_id, is_admin } = JSON.parse(event.body || '{}')
+      const { user_id, is_admin, full_name, password } = JSON.parse(event.body || '{}')
       if (!user_id) return jsonResponse(400, { error: 'user_id is required.' })
 
-      const { error } = await adminClient
-        .from('profiles')
-        .update({ is_admin: !!is_admin })
-        .eq('id', user_id)
+      const profileUpdates = {}
+      if (typeof is_admin === 'boolean') profileUpdates.is_admin = is_admin
+      if (typeof full_name === 'string') profileUpdates.full_name = full_name || null
 
-      if (error) throw error
+      if (Object.keys(profileUpdates).length > 0) {
+        const { error } = await adminClient.from('profiles').update(profileUpdates).eq('id', user_id)
+        if (error) throw error
+      }
+
+      if (typeof password === 'string' && password.length > 0) {
+        if (password.length < 8) {
+          return jsonResponse(400, { error: 'Password must be at least 8 characters.' })
+        }
+        const { error } = await adminClient.auth.admin.updateUserById(user_id, { password })
+        if (error) throw error
+      }
+
       return jsonResponse(200, { success: true })
     }
 
