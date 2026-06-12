@@ -67,7 +67,7 @@ export default function AdminUsers() {
       const data = await callAdminApi('GET')
       setUsers(data.users || [])
     } catch (err) {
-      setError(err.message)
+      setError(err.debug ? `${err.message} ${JSON.stringify(err.debug)}` : err.message)
     } finally {
       setLoading(false)
     }
