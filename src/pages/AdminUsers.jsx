@@ -17,9 +17,20 @@ async function callAdminApi(method, body) {
 
   const json = await res.json().catch(() => ({}))
   if (!res.ok) {
-    throw new Error(json.error || `Request failed (${res.status})`)
+    const err = new Error(json.error || `Request failed (${res.status})`)
+    err.debug = json.debug
+    throw err
   }
   return json
+}
+
+function generatePassword() {
+  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789!@#$%'
+  let pw = ''
+  for (let i = 0; i < 12; i++) {
+    pw += chars[Math.floor(Math.random() * chars.length)]
+  }
+  return pw
 }
 
 export default function AdminUsers() {
@@ -29,11 +40,21 @@ export default function AdminUsers() {
   const [error, setError] = useState('')
   const [status, setStatus] = useState('')
 
+  // New user form
   const [showForm, setShowForm] = useState(false)
   const [fullName, setFullName] = useState('')
   const [email, setEmail] = useState('')
+  const [newPassword, setNewPassword] = useState(generatePassword())
   const [makeAdmin, setMakeAdmin] = useState(false)
   const [busy, setBusy] = useState(false)
+
+  // Inline name editing
+  const [editingId, setEditingId] = useState(null)
+  const [editingName, setEditingName] = useState('')
+
+  // Password reset panel
+  const [resettingId, setResettingId] = useState(null)
+  const [resetPassword, setResetPassword] = useState('')
 
   useEffect(() => {
     loadUsers()
@@ -58,11 +79,19 @@ export default function AdminUsers() {
     setStatus('')
     setBusy(true)
     try {
-      await callAdminApi('POST', { email: email.trim(), full_name: fullName.trim(), is_admin: makeAdmin })
-      setStatus(`Invitation sent to ${email}.`)
+      await callAdminApi('POST', {
+        email: email.trim(),
+        full_name: fullName.trim(),
+        is_admin: makeAdmin,
+        password: newPassword
+      })
+      setStatus(
+        `Account created for ${email}. Share this temporary password with them: "${newPassword}" — they can change it under Account once logged in.`
+      )
       setEmail('')
       setFullName('')
       setMakeAdmin(false)
+      setNewPassword(generatePassword())
       setShowForm(false)
       loadUsers()
     } catch (err) {
@@ -105,17 +134,42 @@ export default function AdminUsers() {
     }
   }
 
-  async function handleSendReset(targetUser) {
+  function startEditName(targetUser) {
+    setEditingId(targetUser.id)
+    setEditingName(targetUser.full_name || '')
+    setResettingId(null)
+  }
+
+  async function saveName(targetUser) {
     setError('')
     setStatus('')
-    const { error } = await supabase.auth.resetPasswordForEmail(targetUser.email, {
-      redirectTo: `${window.location.origin}/reset-password`
-    })
-    if (error) {
-      setError(error.message)
-      return
+    try {
+      await callAdminApi('PATCH', { user_id: targetUser.id, full_name: editingName.trim() })
+      setEditingId(null)
+      loadUsers()
+    } catch (err) {
+      setError(err.message)
     }
-    setStatus(`Password reset link sent to ${targetUser.email}.`)
+  }
+
+  function startReset(targetUser) {
+    setResettingId(targetUser.id)
+    setResetPassword(generatePassword())
+    setEditingId(null)
+  }
+
+  async function saveReset(targetUser) {
+    setError('')
+    setStatus('')
+    try {
+      await callAdminApi('PATCH', { user_id: targetUser.id, password: resetPassword })
+      setStatus(
+        `Password updated for ${targetUser.email}. Share this new password with them: "${resetPassword}"`
+      )
+      setResettingId(null)
+    } catch (err) {
+      setError(err.message)
+    }
   }
 
   return (
@@ -158,6 +212,30 @@ export default function AdminUsers() {
                 />
               </div>
             </div>
+            <div className="field">
+              <label htmlFor="newUserPassword">Temporary password</label>
+              <div style={{ display: 'flex', gap: 8 }}>
+                <input
+                  id="newUserPassword"
+                  type="text"
+                  required
+                  minLength={8}
+                  value={newPassword}
+                  onChange={(e) => setNewPassword(e.target.value)}
+                  style={{ fontFamily: 'monospace' }}
+                />
+                <button
+                  type="button"
+                  className="btn btn-secondary btn-sm"
+                  onClick={() => setNewPassword(generatePassword())}
+                >
+                  Generate
+                </button>
+              </div>
+              <span className="hint">
+                Share this password with them directly. They can change it anytime under Account.
+              </span>
+            </div>
             <div className="checkbox-row" style={{ marginBottom: 16 }}>
               <input
                 id="makeAdmin"
@@ -169,15 +247,12 @@ export default function AdminUsers() {
             </div>
             <div style={{ display: 'flex', gap: 10 }}>
               <button className="btn btn-primary" type="submit" disabled={busy}>
-                {busy ? 'Sending invite...' : 'Send invite'}
+                {busy ? 'Creating...' : 'Create account'}
               </button>
               <button type="button" className="btn btn-secondary" onClick={() => setShowForm(false)}>
                 Cancel
               </button>
             </div>
-            <p className="hint" style={{ marginTop: 10 }}>
-              An email invitation will be sent so they can set their own password.
-            </p>
           </form>
         )}
       </div>
@@ -200,7 +275,27 @@ export default function AdminUsers() {
               <tbody>
                 {users.map((u) => (
                   <tr key={u.id}>
-                    <td>{u.full_name || '—'}</td>
+                    <td>
+                      {editingId === u.id ? (
+                        <div style={{ display: 'flex', gap: 6 }}>
+                          <input
+                            type="text"
+                            value={editingName}
+                            onChange={(e) => setEditingName(e.target.value)}
+                            style={{ minWidth: 140 }}
+                            autoFocus
+                          />
+                          <button className="btn btn-primary btn-sm" onClick={() => saveName(u)}>
+                            Save
+                          </button>
+                          <button className="btn btn-secondary btn-sm" onClick={() => setEditingId(null)}>
+                            Cancel
+                          </button>
+                        </div>
+                      ) : (
+                        u.full_name || '—'
+                      )}
+                    </td>
                     <td>{u.email}</td>
                     <td>
                       <span className="tag">{u.is_admin ? 'Admin' : 'Team member'}</span>
@@ -208,8 +303,13 @@ export default function AdminUsers() {
                     <td>{u.created_at ? new Date(u.created_at).toLocaleDateString() : '—'}</td>
                     <td>
                       <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
-                        <button className="btn btn-secondary btn-sm" onClick={() => handleSendReset(u)}>
-                          Send password reset
+                        {editingId !== u.id && (
+                          <button className="btn btn-secondary btn-sm" onClick={() => startEditName(u)}>
+                            Edit name
+                          </button>
+                        )}
+                        <button className="btn btn-secondary btn-sm" onClick={() => startReset(u)}>
+                          Set password
                         </button>
                         <button
                           className="btn btn-secondary btn-sm"
@@ -226,6 +326,29 @@ export default function AdminUsers() {
                           Remove
                         </button>
                       </div>
+                      {resettingId === u.id && (
+                        <div style={{ marginTop: 8, display: 'flex', gap: 6, justifyContent: 'flex-end' }}>
+                          <input
+                            type="text"
+                            value={resetPassword}
+                            onChange={(e) => setResetPassword(e.target.value)}
+                            style={{ fontFamily: 'monospace', minWidth: 160 }}
+                          />
+                          <button
+                            type="button"
+                            className="btn btn-secondary btn-sm"
+                            onClick={() => setResetPassword(generatePassword())}
+                          >
+                            Generate
+                          </button>
+                          <button className="btn btn-primary btn-sm" onClick={() => saveReset(u)}>
+                            Save password
+                          </button>
+                          <button className="btn btn-secondary btn-sm" onClick={() => setResettingId(null)}>
+                            Cancel
+                          </button>
+                        </div>
+                      )}
                     </td>
                   </tr>
                 ))}
